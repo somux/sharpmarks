@@ -1,6 +1,0 @@
-0000000000000000000000000000000000000000 c591a66bfce74d6f57457fcb127aaaef039fb3f1 somux <varsn19@gmail.com> 1754870723 -0400	commit (initial): chore: add initial backend setup with Express and Prisma
-c591a66bfce74d6f57457fcb127aaaef039fb3f1 c591a66bfce74d6f57457fcb127aaaef039fb3f1 somux <varsn19@gmail.com> 1754870822 -0400	Branch: renamed refs/heads/master to refs/heads/main
-c591a66bfce74d6f57457fcb127aaaef039fb3f1 793ac34f89c2d550c10d933c17265fe85f180168 somux <varsn19@gmail.com> 1754871179 -0400	commit: chore: add initial React + TypeScript frontend scaffold
-793ac34f89c2d550c10d933c17265fe85f180168 c591a66bfce74d6f57457fcb127aaaef039fb3f1 somux <varsn19@gmail.com> 1755303331 -0400	reset: moving to HEAD~1
-c591a66bfce74d6f57457fcb127aaaef039fb3f1 d2d08f940da677bdd3017a3c08158a9d6e4c34d1 somux <varsn19@gmail.com> 1755304194 -0400	commit: Initial Express backend setup
-d2d08f940da677bdd3017a3c08158a9d6e4c34d1 3f3137f5cc8a938431db8d0b9295c59ff91c4780 somux <varsn19@gmail.com> 1755470393 -0400	commit: Initial Express backend setup
