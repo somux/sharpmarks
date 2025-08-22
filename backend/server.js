@@ -1,4 +1,3 @@
-// server.js
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -9,13 +8,12 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true,
 }));
-
 const pool = require('./db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+
 app.use(express.json());
 
-// Auth middleware
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -26,25 +24,20 @@ function authenticateToken(req, res, next) {
     next();
   });
 }
-
 function authorizeRoles(...allowedRoles) {
   return (req, res, next) => {
     if (!req.user || !allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ message: 'Access forbidden: insufficient rights' });
+      return res.status(403).json({ message: 'Forbidden: insufficient rights' });
     }
     next();
   };
 }
 
-// Routes for user account
 app.post('/register', async (req, res) => {
   const { email, password, role } = req.body;
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    await pool.query(
-      'INSERT INTO users (email, password, role) VALUES ($1, $2, $3)',
-      [email, hashedPassword, role]
-    );
+    await pool.query('INSERT INTO users (email, password, role) VALUES ($1, $2, $3)', [email, hashedPassword, role]);
     res.status(201).json({ message: 'User registered!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -58,25 +51,17 @@ app.post('/login', async (req, res) => {
     if (!user) return res.status(400).json({ message: 'Invalid credentials' });
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ message: 'Invalid credentials' });
-    const token = jwt.sign(
-      { userId: user.id, role: user.role, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
+    const token = jwt.sign({ userId: user.id, role: user.role, email: user.email }, process.env.JWT_SECRET, { expiresIn: '1h' });
     res.json({ message: 'Login successful', role: user.role, userId: user.id, token });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- Students ---
+// Students
 app.post('/students', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
   const { first_name, last_name, pronouns } = req.body;
   try {
-    const result = await pool.query(
-      'INSERT INTO students (first_name, last_name, pronouns) VALUES ($1, $2, $3) RETURNING *',
-      [first_name, last_name, pronouns]
-    );
+    const result = await pool.query('INSERT INTO students (first_name, last_name, pronouns) VALUES ($1, $2, $3) RETURNING *', [first_name, last_name, pronouns]);
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -84,24 +69,25 @@ app.post('/students', authenticateToken, authorizeRoles('teacher', 'admin'), asy
 });
 app.get('/students', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM students');
+    const result = await pool.query('SELECT * FROM students ORDER BY last_name, first_name');
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- Classes ---
+// Classes
 app.get('/classes', authenticateToken, async (req, res) => {
+  const { role, userId } = req.user;
   try {
-    const { role, userId } = req.user;
     let query, params;
     if (role === 'admin') {
-      query = 'SELECT * FROM classes'; params = [];
+      query = 'SELECT * FROM classes ORDER BY name';
+      params = [];
     } else if (role === 'teacher') {
-      query = 'SELECT * FROM classes WHERE teacher_id = $1'; params = [userId];
+      query = 'SELECT * FROM classes WHERE teacher_id = $1 ORDER BY name';
+      params = [userId];
     } else {
-      return res.status(403).json({ message: 'Role does not have access to classes' });
+      return res.status(403).json({ message: 'Access denied' });
     }
     const result = await pool.query(query, params);
     res.json(result.rows);
@@ -112,32 +98,59 @@ app.get('/classes', authenticateToken, async (req, res) => {
 app.post('/classes', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
   const { name, description } = req.body;
   try {
-    const result = await pool.query(
-      'INSERT INTO classes (name, description, teacher_id) VALUES ($1, $2, $3) RETURNING *',
-      [name, description, req.user.userId]
-    );
+    const result = await pool.query('INSERT INTO classes (name, description, teacher_id) VALUES ($1, $2, $3) RETURNING *', [name, description, req.user.userId]);
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- Assessments ---
-app.get('/classes/:classId/assessments', authenticateToken, async (req, res) => {
-  const { role, userId } = req.user;
+// Enrollments
+app.post('/classes/:classId/students', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
   const { classId } = req.params;
+  const { student_id } = req.body;
+  const { role, userId } = req.user;
   try {
     if (role === 'teacher') {
-      const classCheck = await pool.query(
-        'SELECT * FROM classes WHERE id = $1 AND teacher_id = $2',
-        [classId, userId]
-      );
-      if (classCheck.rows.length === 0) {
-        return res.status(403).json({ message: "Access denied to this class's assessments" });
-      }
+      const cls = await pool.query('SELECT 1 FROM classes WHERE id = $1 AND teacher_id = $2', [classId, userId]);
+      if (cls.rows.length === 0) return res.status(403).json({ message: 'No access to this class' });
     }
-    const assessments = await pool.query('SELECT * FROM assessments WHERE class_id = $1', [classId]);
-    res.json(assessments.rows);
+    await pool.query('INSERT INTO enrollments (student_id, class_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [student_id, classId]);
+    res.status(201).json({ message: 'Student added to class' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get('/classes/:classId/students', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
+  const { classId } = req.params;
+  const { role, userId } = req.user;
+  try {
+    if (role === 'teacher') {
+      const cls = await pool.query('SELECT 1 FROM classes WHERE id = $1 AND teacher_id = $2', [classId, userId]);
+      if (cls.rows.length === 0) return res.status(403).json({ message: 'No access to this class' });
+    }
+    const result = await pool.query(`
+      SELECT s.id, s.first_name, s.last_name, s.pronouns
+      FROM students s
+      JOIN enrollments e ON s.id = e.student_id
+      WHERE e.class_id = $1
+      ORDER BY s.last_name, s.first_name
+    `, [classId]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Assessments: list/add/edit/delete
+app.get('/classes/:classId/assessments', authenticateToken, async (req, res) => {
+  const { classId } = req.params;
+  const { role, userId } = req.user;
+  try {
+    if (role === 'teacher') {
+      const classCheck = await pool.query('SELECT 1 FROM classes WHERE id = $1 AND teacher_id = $2', [classId, userId]);
+      if (classCheck.rows.length === 0) return res.status(403).json({ message: 'No access to this class' });
+    }
+    const result = await pool.query('SELECT * FROM assessments WHERE class_id = $1 ORDER BY name', [classId]);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -148,24 +161,47 @@ app.post('/classes/:classId/assessments', authenticateToken, authorizeRoles('tea
   const { role, userId } = req.user;
   try {
     if (role === 'teacher') {
-      const classCheck = await pool.query('SELECT * FROM classes WHERE id = $1 AND teacher_id = $2', [classId, userId]);
-      if (classCheck.rows.length === 0) {
-        return res.status(403).json({ message: 'You do not have access to add assessments to this class' });
-      }
+      const classCheck = await pool.query('SELECT 1 FROM classes WHERE id = $1 AND teacher_id = $2', [classId, userId]);
+      if (classCheck.rows.length === 0) return res.status(403).json({ message: 'No access to this class' });
     }
-    const result = await pool.query(
-      'INSERT INTO assessments (class_id, name, weight) VALUES ($1, $2, $3) RETURNING *',
-      [classId, name, weight]
-    );
+    const result = await pool.query('INSERT INTO assessments (class_id, name, weight) VALUES ($1, $2, $3) RETURNING *', [classId, name, weight]);
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- Marks ---
-app.post('/assessments/:assessmentId/marks', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
-  const { assessmentId } = req.params;
+app.put('/assessments/:id', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
+  const { id } = req.params;
+  const { name, weight } = req.body;
+  const { role, userId } = req.user;
+  try {
+    if (role === 'teacher') {
+      const classCheck = await pool.query('SELECT 1 FROM classes c JOIN assessments a ON c.id = a.class_id WHERE a.id = $1 AND c.teacher_id = $2', [id, userId]);
+      if (classCheck.rows.length === 0) return res.status(403).json({ message: 'No access to this assessment' });
+    }
+    const result = await pool.query('UPDATE assessments SET name = $1, weight = $2 WHERE id = $3 RETURNING *', [name, weight, id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.delete('/assessments/:id', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
+  const { id } = req.params;
+  const { role, userId } = req.user;
+  try {
+    if (role === 'teacher') {
+      const classCheck = await pool.query('SELECT 1 FROM classes c JOIN assessments a ON c.id = a.class_id WHERE a.id = $1 AND c.teacher_id = $2', [id, userId]);
+      if (classCheck.rows.length === 0) return res.status(403).json({ message: 'No access to this assessment' });
+    }
+    await pool.query('DELETE FROM assessments WHERE id = $1', [id]);
+    res.json({ message: 'Assessment deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Marks
+app.post('/assessments/:id/marks', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
+  const { id } = req.params;
   const {
     student_id,
     knowledge_and_understanding_received, knowledge_and_understanding_out_of,
@@ -174,28 +210,19 @@ app.post('/assessments/:assessmentId/marks', authenticateToken, authorizeRoles('
     communication_received, communication_out_of
   } = req.body;
   const { role, userId } = req.user;
-
   try {
     if (role === 'teacher') {
-      const assessmentCheck = await pool.query(`
-        SELECT a.* FROM assessments a
-        JOIN classes c ON a.class_id = c.id
-        WHERE a.id = $1 AND c.teacher_id = $2
-      `, [assessmentId, userId]);
-      if (assessmentCheck.rows.length === 0) {
-        return res.status(403).json({ message: 'You do not have access to add marks for this assessment' });
-      }
+      const clsCheck = await pool.query('SELECT 1 FROM classes c JOIN assessments a ON c.id = a.class_id WHERE a.id = $1 AND c.teacher_id = $2', [id, userId]);
+      if (clsCheck.rows.length === 0) return res.status(403).json({ message: 'No access to this assessment' });
     }
-    // Upsert marks
-    const upsertQuery = `
+    const query = `
       INSERT INTO marks (
         assessment_id, student_id,
         knowledge_and_understanding_received, knowledge_and_understanding_out_of,
         thinking_and_inquiry_received, thinking_and_inquiry_out_of,
         application_received, application_out_of,
         communication_received, communication_out_of
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       ON CONFLICT (assessment_id, student_id)
       DO UPDATE SET
         knowledge_and_understanding_received = EXCLUDED.knowledge_and_understanding_received,
@@ -208,44 +235,31 @@ app.post('/assessments/:assessmentId/marks', authenticateToken, authorizeRoles('
         communication_out_of = EXCLUDED.communication_out_of
       RETURNING *;
     `;
-    const result = await pool.query(upsertQuery, [
-      assessmentId, student_id,
+    const result = await pool.query(query, [id, student_id,
       knowledge_and_understanding_received, knowledge_and_understanding_out_of,
       thinking_and_inquiry_received, thinking_and_inquiry_out_of,
       application_received, application_out_of,
       communication_received, communication_out_of
     ]);
-    res.status(201).json(result.rows[0]);
+    res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-app.get('/assessments/:assessmentId/marks', authenticateToken, async (req, res) => {
-  const { assessmentId } = req.params;
+app.get('/assessments/:id/marks', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
+  const { id } = req.params;
   const { role, userId } = req.user;
   try {
-    let result;
     if (role === 'teacher') {
-      const assessmentCheck = await pool.query(`
-        SELECT a.* FROM assessments a
-        JOIN classes c ON a.class_id = c.id
-        WHERE a.id = $1 AND c.teacher_id = $2
-      `, [assessmentId, userId]);
-      if (assessmentCheck.rows.length === 0) {
-        return res.status(403).json({ message: 'You do not have access to view marks for this assessment' });
-      }
-      result = await pool.query('SELECT * FROM marks WHERE assessment_id=$1', [assessmentId]);
-    } else if (role === 'admin') {
-      result = await pool.query('SELECT * FROM marks WHERE assessment_id=$1', [assessmentId]);
-    } else {
-      return res.status(403).json({ message: 'Access denied' });
+      const clsCheck = await pool.query('SELECT 1 FROM classes c JOIN assessments a ON c.id = a.class_id WHERE a.id = $1 AND c.teacher_id = $2', [id, userId]);
+      if (clsCheck.rows.length === 0) return res.status(403).json({ message: 'No access to this assessment' });
     }
+    const result = await pool.query('SELECT * FROM marks WHERE assessment_id = $1', [id]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Server started on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
